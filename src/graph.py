@@ -4,9 +4,7 @@ from langgraph.graph import (
     END,
 )
 
-from langgraph.checkpoint.memory import (
-    InMemorySaver,
-)
+from langgraph.checkpoint.memory import InMemorySaver
 
 from .state import ResearchState
 
@@ -14,22 +12,25 @@ from .nodes import (
     planner_node,
     researcher_node,
     analyzer_node,
+    analysis_router,
     writer_node,
     reviewer_node,
+    review_router,
     max_revisions_node,
     human_approval_node,
-    review_router,
 )
 
 
-builder = StateGraph(
-    ResearchState
-)
+# ============================================================
+# Build graph
+# ============================================================
+
+builder = StateGraph(ResearchState)
 
 
-# -------------------------------------------
+# ============================================================
 # Nodes
-# -------------------------------------------
+# ============================================================
 
 builder.add_node(
     "planner",
@@ -67,9 +68,9 @@ builder.add_node(
 )
 
 
-# -------------------------------------------
-# Normal edges
-# -------------------------------------------
+# ============================================================
+# Initial workflow
+# ============================================================
 
 builder.add_edge(
     START,
@@ -86,10 +87,24 @@ builder.add_edge(
     "analyzer",
 )
 
-builder.add_edge(
+
+# ============================================================
+# Analyzer → Researcher / Writer loop
+# ============================================================
+
+builder.add_conditional_edges(
     "analyzer",
-    "writer",
+    analysis_router,
+    {
+        "research_more": "researcher",
+        "continue": "writer",
+    },
 )
+
+
+# ============================================================
+# Writer → Reviewer
+# ============================================================
 
 builder.add_edge(
     "writer",
@@ -97,9 +112,9 @@ builder.add_edge(
 )
 
 
-# -------------------------------------------
-# Conditional edge
-# -------------------------------------------
+# ============================================================
+# Reviewer routing
+# ============================================================
 
 builder.add_conditional_edges(
     "reviewer",
@@ -112,23 +127,26 @@ builder.add_conditional_edges(
 )
 
 
-builder.add_edge(
-    "human_approval",
-    END,
-)
+# ============================================================
+# End paths
+# ============================================================
 
 builder.add_edge(
     "max_revisions",
     "human_approval",
 )
 
+builder.add_edge(
+    "human_approval",
+    END,
+)
 
-# -------------------------------------------
-# Memory / checkpointing
-# -------------------------------------------
+
+# ============================================================
+# Checkpointing
+# ============================================================
 
 checkpointer = InMemorySaver()
-
 
 research_graph = builder.compile(
     checkpointer=checkpointer
