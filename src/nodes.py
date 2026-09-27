@@ -1,12 +1,11 @@
 import json
-from datetime import date
+
 from langgraph.types import interrupt
 
 from .agent import research_agent
 from .config import OPENROUTER_API_KEY, OPENROUTER_MODEL
 from langchain_openai import ChatOpenAI
 
-from .tools import research_memory
 from .state import ResearchState
 
 
@@ -69,7 +68,6 @@ Example:
 
     return {
         "research_plan": research_plan,
-        "research_iteration": 0,
         "research_gaps": [],
         "evidence_status": "",
         "iteration": 0,
@@ -81,162 +79,236 @@ Example:
 # ============================================================
 
 def researcher_node(state: ResearchState):
+
     topic = state["topic"]
-    research_plan = state["research_plan"]
 
-    # -----------------------------------------------------
-    # Load previous research memory
-    # -----------------------------------------------------
-    try:
-        previous_notes = research_memory.get_notes(topic)
-    except Exception as e:
-        previous_notes = []
-        return_state_error = f"Memory retrieval failed: {str(e)}"
-    else:
-        return_state_error = None
-
-    # -----------------------------------------------------
-    # Format research plan
-    # -----------------------------------------------------
-    plan_text = "\n".join(
-        f"{i}. {task}"
-        for i, task in enumerate(
-            research_plan,
-            start=1,
-        )
+    research_plan = state.get(
+        "research_plan",
+        []
     )
 
-    # -----------------------------------------------------
-    # Format previous memory
-    # -----------------------------------------------------
-    if previous_notes:
-        memory_text = json.dumps(
-            previous_notes,
-            ensure_ascii=False,
-            indent=2,
+    research_gaps = state.get(
+        "research_gaps",
+        []
+    )
+
+    research_iteration = state.get(
+        "research_iteration",
+        0
+    )
+
+    existing_results = state.get(
+        "research_results",
+        []
+    )
+
+    # --------------------------------------------------------
+    # Decide what this research pass should focus on
+    # --------------------------------------------------------
+
+    if research_gaps:
+
+        focus_text = "\n".join(
+            f"- {gap}"
+            for gap in research_gaps
         )
-    else:
-        memory_text = (
-            "No previous research notes are available "
-            "for this topic."
-        )
 
-    # -----------------------------------------------------
-    # Research request
-    # -----------------------------------------------------
-    research_request = f"""
-Research objective:
-{topic}
-Research plan:
-{plan_text}
-PREVIOUS RESEARCH MEMORY:
-{memory_text}
-Perform the research needed to address the research plan.
-Use the previous research memory to understand what has
-already been discovered.
-Do NOT unnecessarily repeat research that is already
-well-supported.
-Instead, focus on:
+        research_instruction = f"""
+The previous analysis found that the research is incomplete.
 
-missing information
-weak evidence
-conflicting information
-areas that need verification
-research tasks that are not yet covered
-TOOL USAGE:
-Use web_search whenever current or external information
-is required.
-Use calculate_market_metrics when numerical market
-metrics such as CAGR or percentage growth need to be
-calculated.
-Use save_research_note to save important evidence-based
-findings that should remain available for later research.
-Use get_research_notes if you need to retrieve previous
-research findings.
-RESEARCH RULES:
-For every important finding:
+Focus specifically on these research gaps:
 
-explain the finding clearly
-include the source URL
-distinguish factual evidence from interpretation
-prefer multiple independent sources when possible
-Do not invent:
+{focus_text}
 
-statistics
-company information
-pricing
-sources
-calculations
-unsupported claims
-Do not write the final polished market report yet.
-Return detailed research notes that another analyst
-can use later.
+Do NOT simply repeat the previous research.
+
+Search for new evidence that directly addresses
+these research gaps.
 """
-    # -----------------------------------------------------
-    # Run research agent
-    # -----------------------------------------------------
-    try:
-        result = research_agent.invoke(
-            {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": research_request,
-                    }
+
+    else:
+
+        plan_text = "\n".join(
+            f"- {task}"
+            for task in research_plan
+        )
+
+        research_instruction = f"""
+Follow this initial research plan:
+
+{plan_text}
+"""
+
+    # --------------------------------------------------------
+    # Existing research context
+    # --------------------------------------------------------
+
+    previous_research = ""
+
+    if existing_results:
+
+        usable_previous = [
+            result
+            for result in existing_results
+            if isinstance(result, str)
+            and result.strip()
+        ]
+
+        if usable_previous:
+
+            previous_research = f"""
+Previous research already collected:
+
+{usable_previous[-1]}
+
+Use this only as context.
+
+Look for additional evidence instead of blindly
+repeating the same findings.
+"""
+
+    # --------------------------------------------------------
+    # Agent prompt
+    # --------------------------------------------------------
+
+    prompt = f"""
+Research topic:
+{topic}
+
+This is research pass #{research_iteration + 1}.
+
+{research_instruction}
+
+{previous_research}
+
+Your job is to perform real web research using
+the available web search tool.
+
+Requirements:
+
+1. You MUST use web_search for current or external information.
+2. Search multiple times when necessary.
+3. Use different queries for different aspects.
+4. Prefer recent and reliable sources.
+5. Include the source URL for every important finding.
+6. Distinguish evidence from interpretation.
+7. Do not invent statistics, companies, prices, or sources.
+8. Focus on evidence relevant to the research objective.
+9. If a previous research pass exists, improve the evidence
+   instead of simply repeating it.
+10. Save useful evidence-based findings to research memory
+    only when both the claim and source are non-empty.
+11. Your final response must contain the actual findings
+    and source URLs.
+
+If no useful evidence can be collected, explicitly say so.
+
+Return detailed research notes.
+"""
+
+    result = research_agent.invoke(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ]
+        }
+    )
+
+    # --------------------------------------------------------
+    # Safely extract usable research text
+    # --------------------------------------------------------
+
+    messages = result.get(
+        "messages",
+        []
+    )
+
+    new_research = ""
+
+    for message in reversed(messages):
+
+        content = getattr(
+            message,
+            "content",
+            ""
+        )
+
+        # Normal string content
+        if isinstance(content, str):
+
+            if content.strip():
+
+                new_research = content.strip()
+                break
+
+        # Some models can return structured content blocks
+        elif isinstance(content, list):
+
+            text_parts = []
+
+            for block in content:
+
+                if isinstance(block, dict):
+
+                    text = block.get(
+                        "text",
+                        ""
+                    )
+
+                    if text:
+                        text_parts.append(text)
+
+            if text_parts:
+
+                new_research = "\n".join(
+                    text_parts
+                ).strip()
+
+                if new_research:
+                    break
+
+    # --------------------------------------------------------
+    # Validate research output
+    # --------------------------------------------------------
+
+    if not new_research:
+
+        new_research = (
+            "No usable research evidence was returned."
+        )
+
+        return {
+            "research_results": (
+                existing_results + [new_research]
+            ),
+            "research_iteration": (
+                research_iteration + 1
+            ),
+            "errors": (
+                state.get("errors", [])
+                + [
+                    "Researcher returned no usable "
+                    "research evidence."
                 ]
-            }
-        )
-
-        final_message = result["messages"][-1]
-        research_output = final_message.content
-
-    except Exception as e:
-        errors = list(state.get("errors", []))
-        errors.append(f"Researcher error: {str(e)}")
-
-        return {
-            "research_results": [],
-            "memory_notes": previous_notes,
-            "errors": errors,
+            ),
         }
 
-    # -----------------------------------------------------
-    # Save useful research output into memory
-    # -----------------------------------------------------
-    try:
-        research_memory.save_note(
-            claim=research_output,
-            source="Research Agent",
-            topic=topic,
-            date=date.today().isoformat(),
-        )
-    except Exception as e:
-        errors = list(state.get("errors", []))
-        errors.append(f"Memory save failed: {str(e)}")
+    # --------------------------------------------------------
+    # Append research instead of overwriting
+    # --------------------------------------------------------
 
-        if return_state_error:
-            errors.append(return_state_error)
-
-        return {
-            "research_results": [research_output],
-            "memory_notes": previous_notes,
-            "errors": errors,
-        }
-
-    # -----------------------------------------------------
-    # Return updated state
-    # -----------------------------------------------------
-    errors = list(state.get("errors", []))
-
-    if return_state_error:
-        errors.append(return_state_error)
-
-    updated_memory = research_memory.get_notes(topic)
+    updated_results = (
+        existing_results + [new_research]
+    )
 
     return {
-        "research_results": [research_output],
-        "memory_notes": updated_memory,
-        "errors": errors,
+        "research_results": updated_results,
+        "research_iteration": (
+            research_iteration + 1
+        ),
     }
 
 
@@ -247,11 +319,48 @@ can use later.
 def analyzer_node(state: ResearchState):
 
     topic = state["topic"]
-    research_results = state.get("research_results", [])
 
-    research_text = "\n\n--- RESEARCH PASS ---\n\n".join(
-        research_results
+    research_results = state.get(
+        "research_results",
+        []
     )
+
+    # --------------------------------------------------------
+    # Deterministic evidence validation
+    # --------------------------------------------------------
+
+    usable_results = [
+        result.strip()
+        for result in research_results
+        if isinstance(result, str)
+        and result.strip()
+        and result.strip()
+        != "No usable research evidence was returned."
+    ]
+
+    if not usable_results:
+
+        return {
+            "evidence_status": "INSUFFICIENT",
+            "research_gaps": [
+                "No usable research evidence was collected."
+            ],
+            "analysis": (
+                "The researcher did not return usable "
+                "evidence. Additional web research is "
+                "required before a reliable report can "
+                "be generated."
+            ),
+        }
+
+    research_text = (
+        "\n\n--- RESEARCH PASS ---\n\n"
+        .join(usable_results)
+    )
+
+    # --------------------------------------------------------
+    # Analyzer prompt
+    # --------------------------------------------------------
 
     prompt = f"""
 You are a senior market research analyst.
@@ -281,11 +390,13 @@ You must:
 
 IMPORTANT:
 
-If important evidence is still missing, mark the research
-as INSUFFICIENT.
+If important evidence is still missing,
+mark the research as INSUFFICIENT.
 
-If the available evidence is enough to produce a useful
-report, mark it as SUFFICIENT.
+If the available evidence is enough to produce
+a useful report, mark it as SUFFICIENT.
+
+Do not invent missing information.
 
 Return ONLY valid JSON in exactly this structure:
 
@@ -305,8 +416,6 @@ OR:
     ],
     "analysis": "Your current analysis and explanation..."
 }}
-
-Do not invent missing information.
 """
 
     response = llm.invoke(prompt)
@@ -314,7 +423,7 @@ Do not invent missing information.
     content = response.content.strip()
 
     # --------------------------------------------------------
-    # Remove markdown JSON fences if the model adds them
+    # Remove markdown JSON fences
     # --------------------------------------------------------
 
     if content.startswith("```json"):
@@ -329,7 +438,7 @@ Do not invent missing information.
     content = content.strip()
 
     # --------------------------------------------------------
-    # Parse structured analyzer response
+    # Parse analyzer response
     # --------------------------------------------------------
 
     try:
@@ -338,7 +447,7 @@ Do not invent missing information.
 
         evidence_status = parsed.get(
             "status",
-            "SUFFICIENT",
+            "INSUFFICIENT",
         )
 
         research_gaps = parsed.get(
@@ -351,21 +460,45 @@ Do not invent missing information.
             "",
         )
 
+        # Never default to SUFFICIENT
         if evidence_status not in {
             "SUFFICIENT",
             "INSUFFICIENT",
         }:
-            evidence_status = "SUFFICIENT"
+            evidence_status = "INSUFFICIENT"
 
-        if not isinstance(research_gaps, list):
-            research_gaps = []
+            if not research_gaps:
+                research_gaps = [
+                    "Analyzer returned an invalid evidence status."
+                ]
+
+        if not isinstance(
+            research_gaps,
+            list
+        ):
+            research_gaps = [
+                "Analyzer returned invalid research gaps."
+            ]
+
+            evidence_status = "INSUFFICIENT"
 
     except json.JSONDecodeError:
 
-        # Safe fallback if the LLM does not return valid JSON.
-        evidence_status = "SUFFICIENT"
-        research_gaps = []
-        analysis = response.content
+        # Safe fallback:
+        # invalid analyzer output MUST NOT
+        # be treated as sufficient evidence.
+
+        evidence_status = "INSUFFICIENT"
+
+        research_gaps = [
+            "Analyzer returned invalid structured output."
+        ]
+
+        analysis = (
+            "The research evidence could not be reliably "
+            "evaluated because the analyzer returned "
+            "invalid JSON."
+        )
 
     return {
         "evidence_status": evidence_status,
@@ -382,7 +515,7 @@ def analysis_router(state: ResearchState):
 
     evidence_status = state.get(
         "evidence_status",
-        "SUFFICIENT",
+        "INSUFFICIENT",
     )
 
     research_iteration = state.get(
@@ -409,26 +542,33 @@ def writer_node(state: ResearchState):
 
     research_results = state.get(
         "research_results",
-        [],
+        []
     )
 
     analysis = state.get(
         "analysis",
-        "",
+        ""
     )
 
     critique = state.get(
         "critique",
-        "",
+        ""
     )
 
     current_draft = state.get(
         "draft_report",
-        "",
+        ""
     )
 
+    usable_results = [
+        result
+        for result in research_results
+        if isinstance(result, str)
+        and result.strip()
+    ]
+
     research_text = "\n\n".join(
-        research_results
+        usable_results
     )
 
     # --------------------------------------------------------
@@ -534,7 +674,7 @@ def reviewer_node(state: ResearchState):
 
     draft_report = state.get(
         "draft_report",
-        "",
+        ""
     )
 
     prompt = f"""
@@ -612,7 +752,10 @@ OR:
     except json.JSONDecodeError:
 
         status = "REVISE"
-        critique = response.content
+
+        critique = (
+            "Reviewer returned invalid structured output."
+        )
 
     return {
         "review_status": status,

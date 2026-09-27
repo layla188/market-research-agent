@@ -7,7 +7,9 @@ Run with:
 
 from __future__ import annotations
 
+import io
 import json
+import re
 import uuid
 from typing import Any
 
@@ -100,12 +102,6 @@ def graph_config() -> dict[str, Any]:
 
 
 def normalize_text(value: Any) -> str:
-    """
-    Convert model / graph output to displayable text.
-
-    Handles normal strings and common structured content formats returned
-    by chat providers.
-    """
     if value is None:
         return ""
 
@@ -120,7 +116,6 @@ def normalize_text(value: Any) -> str:
                 parts.append(item)
 
             elif isinstance(item, dict):
-                # Common content-block shapes.
                 text_value = (
                     item.get("text")
                     or item.get("content")
@@ -131,9 +126,17 @@ def normalize_text(value: Any) -> str:
                     parts.append(text_value)
 
         if parts:
-            return "\n\n".join(part.strip() for part in parts if part.strip())
+            return "\n\n".join(
+                part.strip()
+                for part in parts
+                if part.strip()
+            )
 
-        return json.dumps(value, ensure_ascii=False, indent=2)
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            indent=2,
+        )
 
     if isinstance(value, dict):
         for key in ("text", "content", "value"):
@@ -142,17 +145,16 @@ def normalize_text(value: Any) -> str:
             if isinstance(text_value, str):
                 return text_value.strip()
 
-        return json.dumps(value, ensure_ascii=False, indent=2)
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            indent=2,
+        )
 
     return str(value).strip()
 
 
 def looks_like_report(text: str) -> bool:
-    """
-    Reject obviously incomplete provider output such as tiny metadata strings.
-
-    A real generated report in this project is much longer than a few words.
-    """
     clean = normalize_text(text)
 
     if len(clean) < 300:
@@ -165,12 +167,16 @@ def looks_like_report(text: str) -> bool:
         "Sources",
     )
 
-    return any(marker.lower() in clean.lower() for marker in report_markers)
+    return any(
+        marker.lower() in clean.lower()
+        for marker in report_markers
+    )
 
 
 def get_interrupt_payload(
     result: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
+
     if not result:
         return None
 
@@ -183,8 +189,10 @@ def get_interrupt_payload(
 
     if hasattr(first_interrupt, "value"):
         payload = first_interrupt.value
+
     elif isinstance(first_interrupt, dict):
         payload = first_interrupt
+
     else:
         return None
 
@@ -195,14 +203,10 @@ def get_interrupt_payload(
 
 
 def get_checkpoint_state() -> dict[str, Any]:
-    """
-    Read the canonical checkpointed state from LangGraph.
-
-    This is more reliable after interrupt/resume than depending only on the
-    object returned by invoke().
-    """
     try:
-        snapshot = research_graph.get_state(graph_config())
+        snapshot = research_graph.get_state(
+            graph_config()
+        )
 
         if snapshot is None:
             return {}
@@ -213,8 +217,6 @@ def get_checkpoint_state() -> dict[str, Any]:
             return dict(values)
 
     except Exception:
-        # UI should still be able to use invoke() output if snapshot lookup
-        # is unavailable in a particular LangGraph version.
         pass
 
     return {}
@@ -231,25 +233,45 @@ def merge_states(*states: Any) -> dict[str, Any]:
 
 
 def choose_report(*candidates: Any) -> str:
-    """
-    Pick the best valid report candidate.
-
-    Preference is given in the order provided. Tiny metadata-only strings
-    such as "User Safety: safe" are ignored.
-    """
-    normalized = [normalize_text(value) for value in candidates]
+    normalized = [
+        normalize_text(value)
+        for value in candidates
+    ]
 
     for text in normalized:
         if looks_like_report(text):
             return text
 
-    # If no candidate passes the strong report check, keep the longest text.
-    non_empty = [text for text in normalized if text]
+    non_empty = [
+        text
+        for text in normalized
+        if text
+    ]
 
     if non_empty:
-        return max(non_empty, key=len)
+        return max(
+            non_empty,
+            key=len,
+        )
 
     return ""
+
+
+def safe_filename(topic: str) -> str:
+    filename = topic.lower().strip()
+
+    filename = re.sub(
+        r"[^a-z0-9]+",
+        "-",
+        filename,
+    )
+
+    filename = filename.strip("-")
+
+    return (
+        filename[:60]
+        or "market-research-report"
+    )
 
 
 # -------------------------------------------------------------------
@@ -276,11 +298,12 @@ def run_research(topic: str) -> None:
             checkpoint_state,
         )
 
-        payload = get_interrupt_payload(invoke_result)
+        payload = get_interrupt_payload(
+            invoke_result
+        )
 
         if payload:
-            # Preserve exactly the report that the human is asked to review.
-            # This prevents the report from disappearing after graph resume.
+
             reviewed_report = choose_report(
                 payload.get("report"),
                 result.get("draft_report"),
@@ -289,12 +312,19 @@ def run_research(topic: str) -> None:
                 else "",
             )
 
-            st.session_state.pending_report = reviewed_report
-            st.session_state.interrupt_payload = payload
+            st.session_state.pending_report = (
+                reviewed_report
+            )
+
+            st.session_state.interrupt_payload = (
+                payload
+            )
+
             st.session_state.result = result
             st.session_state.phase = "approval"
 
         else:
+
             final_report = choose_report(
                 result.get("draft_report"),
                 invoke_result.get("draft_report")
@@ -302,7 +332,10 @@ def run_research(topic: str) -> None:
                 else "",
             )
 
-            st.session_state.final_report = final_report
+            st.session_state.final_report = (
+                final_report
+            )
+
             st.session_state.result = result
             st.session_state.phase = "complete"
 
@@ -311,20 +344,20 @@ def run_research(topic: str) -> None:
         st.session_state.phase = "error"
 
 
-def resume_after_human_decision(decision: str) -> None:
-    """
-    Resume the interrupted graph.
+def resume_after_human_decision(
+    decision: str,
+) -> None:
 
-    Important:
-    The report shown during human approval is persisted separately in
-    session state. After resume, the app also reads the canonical LangGraph
-    checkpoint and merges it with the resume result.
-    """
     try:
         st.session_state.error = ""
 
-        before_resume = st.session_state.result or {}
-        reviewed_report = st.session_state.pending_report
+        before_resume = (
+            st.session_state.result or {}
+        )
+
+        reviewed_report = (
+            st.session_state.pending_report
+        )
 
         resume_result = research_graph.invoke(
             Command(resume=decision),
@@ -339,9 +372,6 @@ def resume_after_human_decision(decision: str) -> None:
             checkpoint_state,
         )
 
-        # Human approval does not need to rewrite the report. The safest
-        # display/download value is therefore the report that was actually
-        # shown to the user before approval.
         final_report = choose_report(
             reviewed_report,
             final_state.get("draft_report"),
@@ -350,12 +380,15 @@ def resume_after_human_decision(decision: str) -> None:
             else "",
         )
 
-        # Keep the valid report in the UI state even if a provider returned
-        # a short metadata string in draft_report on a later step.
         if final_report:
-            final_state["draft_report"] = final_report
+            final_state["draft_report"] = (
+                final_report
+            )
 
-        st.session_state.final_report = final_report
+        st.session_state.final_report = (
+            final_report
+        )
+
         st.session_state.result = final_state
         st.session_state.interrupt_payload = None
         st.session_state.phase = "complete"
@@ -366,85 +399,726 @@ def resume_after_human_decision(decision: str) -> None:
 
 
 # -------------------------------------------------------------------
-# Rendering
+# Report export
 # -------------------------------------------------------------------
 
-def render_status(result: dict[str, Any]) -> None:
-    st.subheader("Workflow status")
+def markdown_to_plain_text(
+    markdown_text: str,
+) -> str:
+
+    text = markdown_text
+
+    text = re.sub(
+        r"\*\*(.*?)\*\*",
+        r"\1",
+        text,
+    )
+
+    text = re.sub(
+        r"\*(.*?)\*",
+        r"\1",
+        text,
+    )
+
+    text = re.sub(
+        r"`(.*?)`",
+        r"\1",
+        text,
+    )
+
+    return text
+
+
+def create_docx(report_text: str) -> bytes:
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt
+
+    document = Document()
+
+    # Title
+    title = document.add_heading(
+        "Market Research Report",
+        level=0,
+    )
+
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    subtitle = document.add_paragraph(
+        st.session_state.topic
+    )
+
+    subtitle.alignment = (
+        WD_ALIGN_PARAGRAPH.CENTER
+    )
+
+    document.add_paragraph("")
+
+    for line in report_text.splitlines():
+
+        stripped = line.strip()
+
+        if not stripped:
+            document.add_paragraph("")
+            continue
+
+        # Markdown headings
+        if stripped.startswith("# "):
+            document.add_heading(
+                markdown_to_plain_text(
+                    stripped[2:]
+                ),
+                level=1,
+            )
+
+        elif stripped.startswith("## "):
+            document.add_heading(
+                markdown_to_plain_text(
+                    stripped[3:]
+                ),
+                level=2,
+            )
+
+        elif stripped.startswith("### "):
+            document.add_heading(
+                markdown_to_plain_text(
+                    stripped[4:]
+                ),
+                level=3,
+            )
+
+        # Bullet points
+        elif stripped.startswith("- "):
+            paragraph = document.add_paragraph(
+                style="List Bullet"
+            )
+
+            paragraph.add_run(
+                markdown_to_plain_text(
+                    stripped[2:]
+                )
+            )
+
+        # Numbered lists
+        elif re.match(
+            r"^\d+\.\s+",
+            stripped,
+        ):
+            clean = re.sub(
+                r"^\d+\.\s+",
+                "",
+                stripped,
+            )
+
+            paragraph = document.add_paragraph(
+                style="List Number"
+            )
+
+            paragraph.add_run(
+                markdown_to_plain_text(
+                    clean
+                )
+            )
+
+        else:
+            document.add_paragraph(
+                markdown_to_plain_text(
+                    stripped
+                )
+            )
+
+    # Basic font
+    styles = document.styles
+
+    styles["Normal"].font.name = "Aptos"
+    styles["Normal"].font.size = Pt(10.5)
+
+    output = io.BytesIO()
+
+    document.save(output)
+
+    return output.getvalue()
+
+
+def create_pdf(report_text: str) -> bytes:
+    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import (
+        ParagraphStyle,
+        getSampleStyleSheet,
+    )
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+    )
+
+    output = io.BytesIO()
+
+    document = SimpleDocTemplate(
+        output,
+        pagesize=A4,
+        rightMargin=18 * mm,
+        leftMargin=18 * mm,
+        topMargin=18 * mm,
+        bottomMargin=18 * mm,
+        title="Market Research Report",
+        author="Autonomous Market Research Agent",
+    )
+
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "ReportTitle",
+        parent=styles["Title"],
+        alignment=TA_CENTER,
+        fontSize=20,
+        leading=24,
+        spaceAfter=8,
+    )
+
+    subtitle_style = ParagraphStyle(
+        "ReportSubtitle",
+        parent=styles["Normal"],
+        alignment=TA_CENTER,
+        fontSize=11,
+        leading=14,
+        spaceAfter=18,
+    )
+
+    heading1_style = ParagraphStyle(
+        "ReportHeading1",
+        parent=styles["Heading1"],
+        fontSize=15,
+        leading=19,
+        spaceBefore=12,
+        spaceAfter=8,
+    )
+
+    heading2_style = ParagraphStyle(
+        "ReportHeading2",
+        parent=styles["Heading2"],
+        fontSize=12.5,
+        leading=16,
+        spaceBefore=10,
+        spaceAfter=6,
+    )
+
+    body_style = ParagraphStyle(
+        "ReportBody",
+        parent=styles["BodyText"],
+        fontSize=9.5,
+        leading=14,
+        spaceAfter=7,
+    )
+
+    bullet_style = ParagraphStyle(
+        "ReportBullet",
+        parent=body_style,
+        leftIndent=12,
+        firstLineIndent=-7,
+        spaceAfter=4,
+    )
+
+    story = []
+
+    story.append(
+        Paragraph(
+            "Market Research Report",
+            title_style,
+        )
+    )
+
+    story.append(
+        Paragraph(
+            markdown_to_plain_text(
+                st.session_state.topic
+            ),
+            subtitle_style,
+        )
+    )
+
+    for line in report_text.splitlines():
+
+        stripped = line.strip()
+
+        if not stripped:
+            story.append(
+                Spacer(1, 4)
+            )
+            continue
+
+        # Escape XML-sensitive characters
+        clean = (
+            markdown_to_plain_text(
+                stripped
+            )
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+
+        if stripped.startswith("# "):
+            story.append(
+                Paragraph(
+                    clean[2:],
+                    heading1_style,
+                )
+            )
+
+        elif stripped.startswith("## "):
+            story.append(
+                Paragraph(
+                    clean[3:],
+                    heading1_style,
+                )
+            )
+
+        elif stripped.startswith("### "):
+            story.append(
+                Paragraph(
+                    clean[4:],
+                    heading2_style,
+                )
+            )
+
+        elif stripped.startswith("- "):
+            story.append(
+                Paragraph(
+                    "• " + clean[2:],
+                    bullet_style,
+                )
+            )
+
+        elif re.match(
+            r"^\d+\.\s+",
+            stripped,
+        ):
+            story.append(
+                Paragraph(
+                    clean,
+                    bullet_style,
+                )
+            )
+
+        else:
+            story.append(
+                Paragraph(
+                    clean,
+                    body_style,
+                )
+            )
+
+    document.build(story)
+
+    return output.getvalue()
+
+
+# -------------------------------------------------------------------
+# Workflow visualization
+# -------------------------------------------------------------------
+
+def render_workflow(
+    phase: str,
+    result: dict[str, Any],
+) -> None:
+
+    st.subheader("Research workflow")
+
+    if phase == "idle":
+        current_index = 0
+
+    elif phase == "approval":
+        current_index = 5
+
+    elif phase == "complete":
+        current_index = 6
+
+    else:
+        current_index = 0
+
+    stages = [
+        "Planning",
+        "Research",
+        "Evidence analysis",
+        "Report writing",
+        "Review",
+        "Human approval",
+    ]
+
+    cols = st.columns(len(stages))
+
+    for index, (col, stage) in enumerate(
+        zip(cols, stages)
+    ):
+
+        if phase == "complete":
+            symbol = "✓"
+            state = "complete"
+
+        elif phase == "approval":
+            if index < 5:
+                symbol = "✓"
+                state = "complete"
+            elif index == 5:
+                symbol = "●"
+                state = "current"
+            else:
+                symbol = "○"
+                state = "pending"
+
+        elif phase == "error":
+            symbol = "!"
+            state = "error"
+
+        elif index < current_index:
+            symbol = "✓"
+            state = "complete"
+
+        elif index == current_index:
+            symbol = "●"
+            state = "current"
+
+        else:
+            symbol = "○"
+            state = "pending"
+
+        with col:
+
+            if state == "complete":
+                st.success(
+                    f"{symbol} {stage}"
+                )
+
+            elif state == "current":
+                st.info(
+                    f"{symbol} {stage}"
+                )
+
+            elif state == "error":
+                st.error(
+                    f"{symbol} {stage}"
+                )
+
+            else:
+                st.caption(
+                    f"{symbol} {stage}"
+                )
+
+
+# -------------------------------------------------------------------
+# Status / dashboard
+# -------------------------------------------------------------------
+
+def render_status(
+    result: dict[str, Any],
+) -> None:
+
+    st.subheader("Research overview")
+
+    evidence = (
+        result.get("evidence_status")
+        or "Not evaluated"
+    )
+
+    research_iterations = result.get(
+        "research_iteration",
+        0,
+    )
+
+    revisions = result.get(
+        "iteration",
+        0,
+    )
+
+    reviewer_status = (
+        result.get("review_status")
+        or "Not reviewed"
+    )
 
     col1, col2, col3, col4 = st.columns(4)
 
-    col1.metric(
-        "Evidence",
-        result.get("evidence_status") or "—",
+    with col1:
+        st.metric(
+            "Evidence",
+            evidence,
+        )
+
+    with col2:
+        st.metric(
+            "Research iterations",
+            research_iterations,
+        )
+
+    with col3:
+        st.metric(
+            "Report revisions",
+            revisions,
+        )
+
+    with col4:
+        st.metric(
+            "Reviewer status",
+            reviewer_status,
+        )
+
+    gaps = result.get(
+        "research_gaps",
+        [],
     )
 
-    col2.metric(
-        "Research loop",
-        result.get("research_iteration", 0),
+    errors = result.get(
+        "errors",
+        [],
     )
-
-    col3.metric(
-        "Report revisions",
-        result.get("iteration", 0),
-    )
-
-    col4.metric(
-        "Reviewer status",
-        result.get("review_status") or "—",
-    )
-
-    gaps = result.get("research_gaps", [])
-    errors = result.get("errors", [])
 
     if gaps:
-        with st.expander(f"Research gaps ({len(gaps)})"):
+        with st.expander(
+            f"Research gaps ({len(gaps)})"
+        ):
             for gap in gaps:
-                st.write(f"• {gap}")
+                st.write(
+                    f"• {gap}"
+                )
 
     if errors:
         with st.expander(
-            f"Runtime errors ({len(errors)})",
+            f"Workflow warnings ({len(errors)})",
             expanded=True,
         ):
             for error in errors:
-                st.error(error)
+                st.warning(error)
 
 
 def render_report(
     report: Any,
     heading: str = "Research report",
 ) -> None:
+
     report_text = normalize_text(report)
 
     st.subheader(heading)
 
     if not report_text:
-        st.warning("No report text is available.")
+        st.warning(
+            "No report text is available."
+        )
         return
 
     if not looks_like_report(report_text):
         st.warning(
-            "The workflow returned unusually short report content. "
-            "Open 'Final workflow state' below to inspect the raw state."
+            "The generated report appears incomplete."
         )
 
     with st.container(border=True):
         st.markdown(report_text)
 
-    filename_topic = (
-        st.session_state.topic.lower()
-        .replace(" ", "-")
-        .replace("/", "-")
-    )[:60]
-
-    st.download_button(
-        label="Download report as Markdown",
-        data=report_text.encode("utf-8"),
-        file_name=f"{filename_topic or 'market-research-report'}.md",
-        mime="text/markdown",
-        use_container_width=True,
+    filename_topic = safe_filename(
+        st.session_state.topic
     )
+
+    st.markdown("### Export report")
+
+    pdf_col, docx_col = st.columns(2)
+
+    with pdf_col:
+        try:
+            pdf_data = create_pdf(
+                report_text
+            )
+
+            st.download_button(
+                label="Download PDF",
+                data=pdf_data,
+                file_name=(
+                    f"{filename_topic}.pdf"
+                ),
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True,
+                icon=":material/picture_as_pdf:",
+                on_click="ignore",
+            )
+
+        except ImportError:
+            st.error(
+                "PDF export requires reportlab. "
+                "Install it with: pip install reportlab"
+            )
+
+    with docx_col:
+        try:
+            docx_data = create_docx(
+                report_text
+            )
+
+            st.download_button(
+                label="Download Word",
+                data=docx_data,
+                file_name=(
+                    f"{filename_topic}.docx"
+                ),
+                mime=(
+                    "application/vnd.openxmlformats-"
+                    "officedocument.wordprocessingml.document"
+                ),
+                use_container_width=True,
+                icon=":material/description:",
+                 on_click="ignore",
+            )
+
+        except ImportError:
+            st.error(
+                "Word export requires python-docx. "
+                "Install it with: pip install python-docx"
+            )
+
+
+def render_memory(
+    result: dict[str, Any],
+) -> None:
+
+    notes = result.get(
+        "memory_notes",
+        [],
+    )
+
+    with st.expander(
+        "Research memory",
+        expanded=False,
+    ):
+
+        if not notes:
+            st.caption(
+                "No research-memory entries "
+                "are present in the final state."
+            )
+            return
+
+        for index, note in enumerate(
+            notes,
+            start=1,
+        ):
+
+            claim = note.get(
+                "claim",
+                "",
+            )
+
+            source = note.get(
+                "source",
+                "",
+            )
+
+            topic = note.get(
+                "topic",
+                "",
+            )
+
+            date = note.get(
+                "date",
+                "",
+            )
+
+            st.markdown(
+                f"**Finding {index}**"
+            )
+
+            if claim:
+                st.write(claim)
+
+            if source:
+                st.caption(
+                    f"Source: {source}"
+                )
+
+            if date:
+                st.caption(
+                    f"Date: {date}"
+                )
+
+            if topic:
+                st.caption(
+                    f"Topic: {topic}"
+                )
+
+            if index < len(notes):
+                st.divider()
+
+
+def render_developer_details(
+    result: dict[str, Any],
+) -> None:
+
+    with st.expander(
+        "Developer details",
+        expanded=False,
+    ):
+
+        st.caption(
+            "Technical workflow information "
+            "for debugging and tracing."
+        )
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.write(
+                "**Thread ID**"
+            )
+            st.code(
+                st.session_state.thread_id
+            )
+
+            st.write(
+                "**Research gaps**"
+            )
+
+            gaps = result.get(
+                "research_gaps",
+                [],
+            )
+
+            if gaps:
+                for gap in gaps:
+                    st.write(
+                        f"- {gap}"
+                    )
+            else:
+                st.caption(
+                    "None"
+                )
+
+        with col2:
+            st.write(
+                "**Runtime errors**"
+            )
+
+            errors = result.get(
+                "errors",
+                [],
+            )
+
+            if errors:
+                for error in errors:
+                    st.error(error)
+            else:
+                st.caption(
+                    "None"
+                )
+
+        st.write(
+            "**Final workflow state**"
+        )
+
+        safe_state = {
+            key: value
+            for key, value in result.items()
+            if key != "__interrupt__"
+        }
+
+        st.json(safe_state)
 
 
 # -------------------------------------------------------------------
@@ -452,44 +1126,57 @@ def render_report(
 # -------------------------------------------------------------------
 
 with st.sidebar:
+
     st.title("Research Agent")
-    st.caption(
-        "Autonomous market research with tools, memory, "
-        "guardrails, and human approval."
-    )
-
-    st.divider()
-
-    st.markdown(
-        """
-**Workflow**
-
-1. Plan
-2. Research
-3. Evaluate evidence
-4. Analyze
-5. Write
-6. Review / revise
-7. Human approval
-"""
-    )
-
-    st.divider()
-
-    st.markdown(
-        """
-**Research tools**
-
-- Web search
-- Market metrics calculator
-- Research memory
-"""
-    )
-
-    st.divider()
 
     st.caption(
-        f"Thread: `{st.session_state.thread_id[:8]}…`"
+        "Autonomous market research powered by "
+        "LangGraph, tools, memory, guardrails, "
+        "and human approval."
+    )
+
+    st.divider()
+
+    st.markdown("### Workflow")
+
+    workflow_items = [
+        "Plan research",
+        "Collect evidence",
+        "Evaluate evidence",
+        "Analyze findings",
+        "Generate report",
+        "Review and revise",
+        "Human approval",
+    ]
+
+    for item in workflow_items:
+        st.write(
+            f"• {item}"
+        )
+
+    st.divider()
+
+    st.markdown("### Agent capabilities")
+
+    capabilities = [
+        "Web research",
+        "Market calculations",
+        "Research memory",
+        "Evidence evaluation",
+        "Report revision",
+        "Human approval",
+    ]
+
+    for capability in capabilities:
+        st.write(
+            f"• {capability}"
+        )
+
+    st.divider()
+
+    st.caption(
+        f"Session: "
+        f"`{st.session_state.thread_id[:8]}…`"
     )
 
     if st.button(
@@ -501,76 +1188,120 @@ with st.sidebar:
 
 
 # -------------------------------------------------------------------
-# Main
+# Main header
 # -------------------------------------------------------------------
 
-st.title("Autonomous Market Research Agent")
-st.caption(
-    "Generate an evidence-based market research report through "
-    "a traced, multi-step LangGraph workflow."
+st.title(
+    "Autonomous Market Research Agent"
 )
 
-st.divider()
+st.caption(
+    "Turn a market question into a structured, "
+    "evidence-based research report through an "
+    "autonomous multi-step workflow."
+)
 
 
 # -------------------------------------------------------------------
-# Input
+# Idle / new research
 # -------------------------------------------------------------------
 
 if st.session_state.phase == "idle":
-    st.subheader("Research objective")
 
-    with st.form("research_form"):
+    st.divider()
+
+    st.subheader(
+        "What market would you like to research?"
+    )
+
+    st.caption(
+        "Enter a market, industry, product category, "
+        "or business domain. The agent will plan the "
+        "research, collect evidence, analyze findings, "
+        "and prepare a report for review."
+    )
+
+    with st.form(
+        "research_form",
+        clear_on_submit=False,
+    ):
+
         topic = st.text_input(
-            "Market research topic",
+            "Research topic",
             placeholder=(
-                "e.g. AI-powered customer support software market"
+                "e.g. Electronics market in Egypt"
             ),
+            label_visibility="collapsed",
         )
 
         submitted = st.form_submit_button(
-            "Run research",
+            "Start market research",
             type="primary",
             use_container_width=True,
         )
 
     if submitted:
+
         clean_topic = topic.strip()
 
         if not clean_topic:
-            st.warning("Enter a market research topic first.")
+
+            st.warning(
+                "Enter a market research topic first."
+            )
 
         else:
+
             with st.status(
-                "Running the autonomous research workflow...",
+                "Running market research...",
                 expanded=True,
             ) as status:
-                st.write("Planning the research scope")
-                st.write("Collecting and evaluating evidence")
-                st.write("Generating and reviewing the report")
 
-                run_research(clean_topic)
+                st.write(
+                    "Planning the research scope"
+                )
 
-                if st.session_state.phase == "error":
+                st.write(
+                    "Collecting and evaluating evidence"
+                )
+
+                st.write(
+                    "Generating and reviewing the report"
+                )
+
+                run_research(
+                    clean_topic
+                )
+
+                if (
+                    st.session_state.phase
+                    == "error"
+                ):
+
                     status.update(
-                        label="Workflow failed",
+                        label="Research workflow failed",
                         state="error",
                         expanded=True,
                     )
 
-                elif st.session_state.phase == "approval":
+                elif (
+                    st.session_state.phase
+                    == "approval"
+                ):
+
                     status.update(
                         label=(
                             "Research completed — "
-                            "human approval required"
+                            "review required"
                         ),
                         state="complete",
                         expanded=False,
                     )
 
                 else:
+
                     status.update(
-                        label="Workflow completed",
+                        label="Research completed",
                         state="complete",
                         expanded=False,
                     )
@@ -583,17 +1314,37 @@ if st.session_state.phase == "idle":
 # -------------------------------------------------------------------
 
 elif st.session_state.phase == "approval":
-    result = st.session_state.result or {}
-    payload = st.session_state.interrupt_payload or {}
+
+    result = (
+        st.session_state.result
+        or {}
+    )
+
+    payload = (
+        st.session_state.interrupt_payload
+        or {}
+    )
 
     st.info(
         payload.get(
             "message",
-            "The workflow is paused and waiting for human approval.",
+            "The research workflow is waiting "
+            "for your approval.",
         )
     )
 
-    render_status(result)
+    st.markdown(
+        f"### {st.session_state.topic}"
+    )
+
+    render_workflow(
+        "approval",
+        result,
+    )
+
+    render_status(
+        result
+    )
 
     report = choose_report(
         st.session_state.pending_report,
@@ -603,36 +1354,52 @@ elif st.session_state.phase == "approval":
 
     render_report(
         report,
-        heading="Report awaiting approval",
+        heading="Report ready for review",
     )
 
-    st.subheader("Human decision")
+    st.divider()
+
+    st.subheader(
+        "Human review"
+    )
 
     st.caption(
-        "Approve to finalize this workflow, or reject to "
-        "finish the run without approval."
+        "Review the generated report before the "
+        "workflow is finalized."
     )
 
     approve_col, reject_col = st.columns(2)
 
     with approve_col:
+
         if st.button(
             "Approve report",
             type="primary",
             use_container_width=True,
         ):
-            with st.spinner("Resuming workflow..."):
-                resume_after_human_decision("approve")
+
+            with st.spinner(
+                "Finalizing approved report..."
+            ):
+                resume_after_human_decision(
+                    "approve"
+                )
 
             st.rerun()
 
     with reject_col:
+
         if st.button(
             "Reject report",
             use_container_width=True,
         ):
-            with st.spinner("Resuming workflow..."):
-                resume_after_human_decision("reject")
+
+            with st.spinner(
+                "Finalizing workflow..."
+            ):
+                resume_after_human_decision(
+                    "reject"
+                )
 
             st.rerun()
 
@@ -642,20 +1409,41 @@ elif st.session_state.phase == "approval":
 # -------------------------------------------------------------------
 
 elif st.session_state.phase == "complete":
-    result = st.session_state.result or {}
 
-    approved = bool(result.get("approved"))
+    result = (
+        st.session_state.result
+        or {}
+    )
+
+    approved = bool(
+        result.get("approved")
+    )
 
     if approved:
+
         st.success(
-            "Workflow completed and the report was approved."
-        )
-    else:
-        st.warning(
-            "Workflow completed without human approval."
+            "Research completed and the report "
+            "was approved."
         )
 
-    render_status(result)
+    else:
+
+        st.warning(
+            "Research completed without human approval."
+        )
+
+    st.markdown(
+        f"## {st.session_state.topic}"
+    )
+
+    render_workflow(
+        "complete",
+        result,
+    )
+
+    render_status(
+        result
+    )
 
     final_report = choose_report(
         st.session_state.final_report,
@@ -668,30 +1456,13 @@ elif st.session_state.phase == "complete":
         heading="Final market research report",
     )
 
-    with st.expander("Research memory used in this run"):
-        notes = result.get("memory_notes", [])
+    render_memory(
+        result
+    )
 
-        if not notes:
-            st.caption(
-                "No research-memory entries are present "
-                "in the final state."
-            )
-        else:
-            for index, note in enumerate(
-                notes,
-                start=1,
-            ):
-                st.markdown(f"**Note {index}**")
-                st.write(note)
-
-    with st.expander("Final workflow state"):
-        safe_state = {
-            key: value
-            for key, value in result.items()
-            if key != "__interrupt__"
-        }
-
-        st.json(safe_state)
+    render_developer_details(
+        result
+    )
 
     st.divider()
 
@@ -709,14 +1480,24 @@ elif st.session_state.phase == "complete":
 # -------------------------------------------------------------------
 
 elif st.session_state.phase == "error":
-    st.error("The workflow could not complete.")
+
+    st.error(
+        "The research workflow could not complete."
+    )
 
     if st.session_state.error:
-        st.code(st.session_state.error)
+
+        with st.expander(
+            "Technical error details",
+            expanded=True,
+        ):
+            st.code(
+                st.session_state.error
+            )
 
     st.caption(
-        "Check API keys, model availability, Tavily quota, "
-        "and the terminal traceback."
+        "Check API keys, model availability, "
+        "Tavily quota, and the terminal traceback."
     )
 
     if st.button(

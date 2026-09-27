@@ -3,6 +3,7 @@ from typing import Any
 
 
 class ResearchMemory:
+
     def __init__(self):
         self.notes: list[dict[str, Any]] = []
 
@@ -13,11 +14,30 @@ class ResearchMemory:
         topic: str,
         date: str | None = None,
     ) -> dict:
+
+        if not claim or not claim.strip():
+            raise ValueError(
+                "Research claim cannot be empty."
+            )
+
+        if not source or not source.strip():
+            raise ValueError(
+                "Research source cannot be empty."
+            )
+
+        if not topic or not topic.strip():
+            raise ValueError(
+                "Research topic cannot be empty."
+            )
+
         note = {
-            "claim": claim,
-            "source": source,
-            "topic": topic,
-            "date": date or datetime.now().strftime("%Y-%m-%d"),
+            "claim": claim.strip(),
+            "source": source.strip(),
+            "topic": topic.strip(),
+            "date": (
+                date
+                or datetime.now().strftime("%Y-%m-%d")
+            ),
         }
 
         self.notes.append(note)
@@ -27,7 +47,11 @@ class ResearchMemory:
             "note": note,
         }
 
-    def get_notes(self, topic: str | None = None) -> list[dict]:
+    def get_notes(
+        self,
+        topic: str | None = None,
+    ) -> list[dict]:
+
         if topic is None:
             return self.notes.copy()
 
