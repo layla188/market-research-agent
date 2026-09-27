@@ -1,11 +1,12 @@
 import json
-
+from datetime import date
 from langgraph.types import interrupt
 
 from .agent import research_agent
 from .config import OPENROUTER_API_KEY, OPENROUTER_MODEL
 from langchain_openai import ChatOpenAI
 
+from .tools import research_memory
 from .state import ResearchState
 
 
@@ -80,125 +81,162 @@ Example:
 # ============================================================
 
 def researcher_node(state: ResearchState):
-
     topic = state["topic"]
+    research_plan = state["research_plan"]
 
-    research_plan = state.get("research_plan", [])
-    research_gaps = state.get("research_gaps", [])
-    research_iteration = state.get("research_iteration", 0)
-    existing_results = state.get("research_results", [])
-
-    # --------------------------------------------------------
-    # Decide what this research pass should focus on
-    # --------------------------------------------------------
-
-    if research_gaps:
-
-        focus_text = "\n".join(
-            f"- {gap}"
-            for gap in research_gaps
-        )
-
-        research_instruction = f"""
-The previous analysis found that the research is incomplete.
-
-Focus specifically on these research gaps:
-
-{focus_text}
-
-Do NOT simply repeat the previous research.
-Search for new evidence that directly addresses these gaps.
-"""
-
+    # -----------------------------------------------------
+    # Load previous research memory
+    # -----------------------------------------------------
+    try:
+        previous_notes = research_memory.get_notes(topic)
+    except Exception as e:
+        previous_notes = []
+        return_state_error = f"Memory retrieval failed: {str(e)}"
     else:
+        return_state_error = None
 
-        plan_text = "\n".join(
-            f"- {task}"
-            for task in research_plan
+    # -----------------------------------------------------
+    # Format research plan
+    # -----------------------------------------------------
+    plan_text = "\n".join(
+        f"{i}. {task}"
+        for i, task in enumerate(
+            research_plan,
+            start=1,
         )
-
-        research_instruction = f"""
-Follow this initial research plan:
-
-{plan_text}
-"""
-
-    # --------------------------------------------------------
-    # Existing research context
-    # --------------------------------------------------------
-
-    previous_research = ""
-
-    if existing_results:
-        previous_research = f"""
-Previous research already collected:
-
-{existing_results[-1]}
-
-Use this only as context.
-Look for additional evidence instead of blindly repeating it.
-"""
-
-    # --------------------------------------------------------
-    # Agent prompt
-    # --------------------------------------------------------
-
-    prompt = f"""
-Research topic:
-{topic}
-
-This is research pass #{research_iteration + 1}.
-
-{research_instruction}
-
-{previous_research}
-
-Your job is to perform web research using the available
-web search tool.
-
-Requirements:
-
-1. Search multiple times when necessary.
-2. Use different queries for different aspects.
-3. Prefer recent and reliable sources.
-4. Include the source URL for every important finding.
-5. Distinguish evidence from interpretation.
-6. Do not invent statistics, companies, prices, or sources.
-7. Focus on evidence relevant to the research objective.
-8. If a previous research pass exists, try to improve the
-   evidence rather than repeating the same findings.
-
-Return detailed research notes.
-"""
-
-    result = research_agent.invoke(
-        {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ]
-        }
     )
 
-    messages = result.get("messages", [])
-
-    if not messages:
-        new_research = "No research results were returned."
+    # -----------------------------------------------------
+    # Format previous memory
+    # -----------------------------------------------------
+    if previous_notes:
+        memory_text = json.dumps(
+            previous_notes,
+            ensure_ascii=False,
+            indent=2,
+        )
     else:
-        final_message = messages[-1]
-        new_research = final_message.content
+        memory_text = (
+            "No previous research notes are available "
+            "for this topic."
+        )
 
-    # --------------------------------------------------------
-    # Append new research instead of overwriting old research
-    # --------------------------------------------------------
+    # -----------------------------------------------------
+    # Research request
+    # -----------------------------------------------------
+    research_request = f"""
+Research objective:
+{topic}
+Research plan:
+{plan_text}
+PREVIOUS RESEARCH MEMORY:
+{memory_text}
+Perform the research needed to address the research plan.
+Use the previous research memory to understand what has
+already been discovered.
+Do NOT unnecessarily repeat research that is already
+well-supported.
+Instead, focus on:
 
-    updated_results = existing_results + [new_research]
+missing information
+weak evidence
+conflicting information
+areas that need verification
+research tasks that are not yet covered
+TOOL USAGE:
+Use web_search whenever current or external information
+is required.
+Use calculate_market_metrics when numerical market
+metrics such as CAGR or percentage growth need to be
+calculated.
+Use save_research_note to save important evidence-based
+findings that should remain available for later research.
+Use get_research_notes if you need to retrieve previous
+research findings.
+RESEARCH RULES:
+For every important finding:
+
+explain the finding clearly
+include the source URL
+distinguish factual evidence from interpretation
+prefer multiple independent sources when possible
+Do not invent:
+
+statistics
+company information
+pricing
+sources
+calculations
+unsupported claims
+Do not write the final polished market report yet.
+Return detailed research notes that another analyst
+can use later.
+"""
+    # -----------------------------------------------------
+    # Run research agent
+    # -----------------------------------------------------
+    try:
+        result = research_agent.invoke(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": research_request,
+                    }
+                ]
+            }
+        )
+
+        final_message = result["messages"][-1]
+        research_output = final_message.content
+
+    except Exception as e:
+        errors = list(state.get("errors", []))
+        errors.append(f"Researcher error: {str(e)}")
+
+        return {
+            "research_results": [],
+            "memory_notes": previous_notes,
+            "errors": errors,
+        }
+
+    # -----------------------------------------------------
+    # Save useful research output into memory
+    # -----------------------------------------------------
+    try:
+        research_memory.save_note(
+            claim=research_output,
+            source="Research Agent",
+            topic=topic,
+            date=date.today().isoformat(),
+        )
+    except Exception as e:
+        errors = list(state.get("errors", []))
+        errors.append(f"Memory save failed: {str(e)}")
+
+        if return_state_error:
+            errors.append(return_state_error)
+
+        return {
+            "research_results": [research_output],
+            "memory_notes": previous_notes,
+            "errors": errors,
+        }
+
+    # -----------------------------------------------------
+    # Return updated state
+    # -----------------------------------------------------
+    errors = list(state.get("errors", []))
+
+    if return_state_error:
+        errors.append(return_state_error)
+
+    updated_memory = research_memory.get_notes(topic)
 
     return {
-        "research_results": updated_results,
-        "research_iteration": research_iteration + 1,
+        "research_results": [research_output],
+        "memory_notes": updated_memory,
+        "errors": errors,
     }
 
 

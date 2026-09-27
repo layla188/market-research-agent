@@ -22,4 +22,8 @@ class ResearchState(TypedDict):
     iteration: int
     approved: bool
 
+    # Research memory
     memory_notes: list[dict]
+
+    # Runtime errors that can be surfaced in the final workflow
+    errors: list[str]

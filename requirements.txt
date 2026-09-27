@@ -9,3 +9,4 @@ langgraph-sdk==0.4.5
 pydantic==2.13.5
 python-dotenv==1.2.3
 tavily-python==0.8.4
+streamlit
